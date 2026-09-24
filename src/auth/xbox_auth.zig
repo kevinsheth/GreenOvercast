@@ -1,6 +1,7 @@
 const std = @import("std");
 const form = @import("form_writer");
 const json = @import("json_reader");
+const region = @import("xbox_region");
 
 const c = @cImport({
     @cInclude("SDL2/SDL.h");
@@ -31,6 +32,7 @@ const Auth = struct {
     user_token: [8192]u8 = [_]u8{0} ** 8192,
     refresh_token: [8192]u8 = [_]u8{0} ** 8192,
     passport_token: [8192]u8 = [_]u8{0} ** 8192,
+    cloud_base_uri: [256]u8 = [_]u8{0} ** 256,
     token_path: [512]u8 = [_]u8{0} ** 512,
     token_key_path: [512]u8 = [_]u8{0} ** 512,
 };
@@ -396,8 +398,12 @@ fn refresh(auth: *Auth) !c_int {
         c.go_http_response_destroy(response);
         return auth_failed;
     };
+    _ = region.selectDefaultBaseUri(gssv_data, &auth.cloud_base_uri) catch {
+        c.go_http_response_destroy(response);
+        return auth_failed;
+    };
     c.go_http_response_destroy(response);
-    debug("gsToken obtained\n", .{});
+    debug("gsToken obtained; cloud region: {s}\n", .{cString(&auth.cloud_base_uri)});
 
     const passport_body = try buildForm(&body_buffer, &.{
         .{ .key = "client_id", .value = cString(&auth.client_id) },
@@ -487,6 +493,7 @@ pub export fn go_xbox_auth_sign_out(auth: ?*Auth) c_int {
     std.crypto.secureZero(u8, &handle.user_token);
     std.crypto.secureZero(u8, &handle.refresh_token);
     std.crypto.secureZero(u8, &handle.passport_token);
+    std.crypto.secureZero(u8, &handle.cloud_base_uri);
     return c.go_token_store_delete(
         @ptrCast(&handle.token_path),
         @ptrCast(&handle.token_key_path),
@@ -501,6 +508,12 @@ pub export fn go_xbox_auth_gssv_token(auth: ?*const Auth) [*c]const u8 {
 pub export fn go_xbox_auth_passport_token(auth: ?*const Auth) [*c]const u8 {
     const handle = auth orelse return null;
     return @ptrCast(&handle.passport_token);
+}
+
+pub export fn go_xbox_auth_cloud_base_uri(auth: ?*const Auth) [*c]const u8 {
+    const handle = auth orelse return null;
+    if (handle.cloud_base_uri[0] == 0) return null;
+    return @ptrCast(&handle.cloud_base_uri);
 }
 
 pub export fn go_xbox_auth_destroy(auth: ?*Auth) void {

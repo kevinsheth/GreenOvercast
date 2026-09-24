@@ -6,11 +6,11 @@ pub const Dimensions = struct {
 };
 
 const minimum = Dimensions{ .width = 640, .height = 360 };
-const maximum = Dimensions{ .width = 1280, .height = 720 };
+const maximum = Dimensions{ .width = 1920, .height = 1080 };
 const fallback = Dimensions{ .width = 640, .height = 480 };
 
 pub fn forDisplay(display_width: u32, display_height: u32) Dimensions {
-    if (display_width == 0 or display_height == 0) return fallback;
+    if (display_width == 0 or display_height == 0 or display_width < display_height) return fallback;
 
     var width: u64 = display_width;
     var height: u64 = display_height;
@@ -58,8 +58,9 @@ test "scales smaller displays to the Xbox minimum" {
 }
 
 test "fits larger displays within decoder limits" {
-    try std.testing.expectEqual(Dimensions{ .width = 960, .height = 720 }, forDisplay(1024, 768));
-    try std.testing.expectEqual(Dimensions{ .width = 1280, .height = 720 }, forDisplay(1920, 1080));
+    try std.testing.expectEqual(Dimensions{ .width = 1024, .height = 768 }, forDisplay(1024, 768));
+    try std.testing.expectEqual(Dimensions{ .width = 1920, .height = 1080 }, forDisplay(1920, 1080));
+    try std.testing.expectEqual(Dimensions{ .width = 1920, .height = 1080 }, forDisplay(2560, 1440));
 }
 
 test "aligns dimensions to eight pixels" {

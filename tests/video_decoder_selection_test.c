@@ -15,9 +15,11 @@ static FakeDecoder software;
 static FakeDecoder cedar;
 static FakeDecoder mpp;
 static FakeDecoder v4l2_request;
+static FakeDecoder v4l2_m2m;
 static int cedar_available = 1;
 static int mpp_available = 1;
 static int v4l2_request_available = 1;
+static int v4l2_m2m_available = 1;
 
 static GoVideoDecoderResult fake_submit(GoVideoDecoder* decoder, const uint8_t* data,
                                         size_t length) {
@@ -96,6 +98,17 @@ static const GoVideoDecoderOps v4l2_request_ops = {
     .destroy = fake_destroy,
 };
 
+static const GoVideoDecoderOps v4l2_m2m_ops = {
+    .name = "fake-v4l2-m2m",
+    .backend = GO_VIDEO_DECODER_BACKEND_V4L2_M2M,
+    .submit_access_unit = fake_submit,
+    .receive_frame = fake_receive,
+    .release_frame = fake_release,
+    .reset = fake_reset,
+    .last_error = fake_error,
+    .destroy = fake_destroy,
+};
+
 static GoVideoDecoder* initialize(FakeDecoder* decoder, const GoVideoDecoderOps* ops) {
     decoder->base.ops = ops;
     return &decoder->base;
@@ -141,6 +154,17 @@ GoVideoDecoder* go_video_decoder_v4l2_request_create(int max_width, int max_heig
     return NULL;
 }
 
+GoVideoDecoder* go_video_decoder_v4l2_m2m_create(int max_width, int max_height, char* error,
+                                                 size_t error_capacity) {
+    (void)max_width;
+    (void)max_height;
+    if (v4l2_m2m_available)
+        return initialize(&v4l2_m2m, &v4l2_m2m_ops);
+    if (error && error_capacity > 0)
+        snprintf(error, error_capacity, "fake V4L2 M2M unavailable");
+    return NULL;
+}
+
 int main(void) {
     GoVideoDecoderSelection selection;
     char error[128];
@@ -165,9 +189,18 @@ int main(void) {
     go_video_decoder_selection_destroy(&selection);
     assert(v4l2_request.destroys == 1);
 
+    config.preference = GO_VIDEO_DECODER_PREFERENCE_V4L2_M2M;
+    assert(go_video_decoder_selection_create(&config, &selection, error, sizeof(error)) == 0);
+    assert(selection.active == &v4l2_m2m.base);
+    assert(selection.software == NULL);
+    assert(selection.allow_runtime_fallback == 0);
+    go_video_decoder_selection_destroy(&selection);
+    assert(v4l2_m2m.destroys == 1);
+
     mpp_available = 0;
     cedar_available = 0;
     v4l2_request_available = 0;
+    v4l2_m2m_available = 0;
     config.preference = GO_VIDEO_DECODER_PREFERENCE_AUTO;
     assert(go_video_decoder_selection_create(&config, &selection, error, sizeof(error)) == 0);
     assert(selection.active == &software.base);
@@ -195,6 +228,10 @@ int main(void) {
     config.preference = GO_VIDEO_DECODER_PREFERENCE_V4L2_REQUEST;
     assert(go_video_decoder_selection_create(&config, &selection, error, sizeof(error)) == -1);
     assert(strstr(error, "fake V4L2 request unavailable") != NULL);
+
+    config.preference = GO_VIDEO_DECODER_PREFERENCE_V4L2_M2M;
+    assert(go_video_decoder_selection_create(&config, &selection, error, sizeof(error)) == -1);
+    assert(strstr(error, "fake V4L2 M2M unavailable") != NULL);
 
     config.max_width = 0;
     assert(go_video_decoder_selection_create(&config, &selection, error, sizeof(error)) == -1);

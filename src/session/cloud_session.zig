@@ -7,7 +7,6 @@ const c = @cImport({
     @cInclude("xbox_auth.h");
 });
 
-const base_url = "https://weu.core.gssv-play-prod.xboxlive.com";
 const device_info_prefix =
     "X-MS-Device-Info: {\"appInfo\":{\"env\":{\"clientAppId\":\"www.xbox.com\"," ++
     "\"clientAppType\":\"browser\",\"clientAppVersion\":\"26.1.97\"," ++
@@ -60,6 +59,10 @@ fn debug(comptime format: []const u8, args: anytype) void {
     if (std.posix.getenv("GREENOVERCAST_DEBUG") != null) std.debug.print(format, args);
 }
 
+fn baseUrl(session: *const Session) ![]const u8 {
+    return cString(c.go_xbox_auth_cloud_base_uri(session.auth)) orelse error.MissingCloudUrl;
+}
+
 fn request(
     session: *Session,
     method: [*c]const u8,
@@ -108,7 +111,11 @@ fn startGame(session: *Session, title_id: []const u8) !void {
     if (title_id.len == 0) return error.InvalidTitle;
     if (bufferString(&session.session_path).len != 0) return error.ActiveSession;
     var url_buffer: [512]u8 = undefined;
-    const url = try std.fmt.bufPrintZ(&url_buffer, "{s}/v5/sessions/cloud/play", .{base_url});
+    const url = try std.fmt.bufPrintZ(
+        &url_buffer,
+        "{s}/v5/sessions/cloud/play",
+        .{try baseUrl(session)},
+    );
     var body_buffer: [4096]u8 = undefined;
     const body = try std.fmt.bufPrintZ(
         &body_buffer,
@@ -142,7 +149,7 @@ fn waitForState(session: *Session, target: []const u8, max_polls: usize) !void {
         const url = try std.fmt.bufPrintZ(
             &url_buffer,
             "{s}/{s}/state",
-            .{ base_url, bufferString(&session.session_path) },
+            .{ try baseUrl(session), bufferString(&session.session_path) },
         );
         const response = request(session, "GET", url.ptr, null, null, 0);
         if (c.go_http_response_succeeded(response) == 0) {
@@ -182,7 +189,7 @@ fn connect(session: *Session) !void {
     const url = try std.fmt.bufPrintZ(
         &url_buffer,
         "{s}/{s}/connect",
-        .{ base_url, bufferString(&session.session_path) },
+        .{ try baseUrl(session), bufferString(&session.session_path) },
     );
     var body_buffer: [16384]u8 = undefined;
     const body = try std.fmt.bufPrintZ(&body_buffer, "{{\"userToken\":\"{s}\"}}", .{passport_token});
@@ -197,7 +204,7 @@ fn sendKeepalive(session: *Session) !void {
     const url = try std.fmt.bufPrintZ(
         &url_buffer,
         "{s}/{s}/keepalive",
-        .{ base_url, bufferString(&session.session_path) },
+        .{ try baseUrl(session), bufferString(&session.session_path) },
     );
     const response = request(session, "POST", url.ptr, null, null, 0);
     defer c.go_http_response_destroy(response);
@@ -253,9 +260,11 @@ fn end(session: *Session) void {
     if (path.len == 0) return;
 
     var url_buffer: [512]u8 = undefined;
-    if (std.fmt.bufPrintZ(&url_buffer, "{s}/{s}", .{ base_url, path })) |url| {
-        const response = request(session, "DELETE", url.ptr, null, null, 0);
-        c.go_http_response_destroy(response);
+    if (baseUrl(session)) |base_url| {
+        if (std.fmt.bufPrintZ(&url_buffer, "{s}/{s}", .{ base_url, path })) |url| {
+            const response = request(session, "DELETE", url.ptr, null, null, 0);
+            c.go_http_response_destroy(response);
+        } else |_| {}
     } else |_| {}
     std.crypto.secureZero(u8, &session.session_path);
 }
@@ -269,8 +278,8 @@ pub export fn go_cloud_session_create(auth: ?*c.GoXboxAuth, ui: ?*c.GoHandheldUi
 }
 
 pub export fn go_cloud_session_base_url(session: ?*const Session) [*c]const u8 {
-    if (session == null) return null;
-    return base_url;
+    const handle = session orelse return null;
+    return c.go_xbox_auth_cloud_base_uri(handle.auth);
 }
 
 pub export fn go_cloud_session_path(session: ?*const Session) [*c]const u8 {

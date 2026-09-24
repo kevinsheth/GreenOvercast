@@ -32,7 +32,7 @@ MPP_COMMIT=c08762ebfadeb4e986d2fed993bc7a54862d3ebe
   exit 1
 }
 
-for command_name in cmake curl make patch perl python3 tar; do
+for command_name in cmake curl make patch perl pkg-config python3 tar; do
   command -v "$command_name" >/dev/null 2>&1 || {
     echo "missing build tool: $command_name" >&2
     exit 1
@@ -305,8 +305,8 @@ if [ ! -f "$BUILDS/.libdrm-2.4.128-v4l2-headers" ]; then
   : >"$BUILDS/.libdrm-2.4.128-v4l2-headers"
 fi
 
-if [ ! -f "$BUILDS/.ffmpeg-9.0-h264-mjpeg-v4l2-request-shared" ]; then
-  ffmpeg_build="$BUILDS/ffmpeg-9.0-h264-mjpeg-v4l2-request-shared"
+if [ ! -f "$BUILDS/.ffmpeg-9.0-h264-mjpeg-v4l2-m2m-request-v2-shared" ]; then
+  ffmpeg_build="$BUILDS/ffmpeg-9.0-h264-mjpeg-v4l2-m2m-request-v2-shared"
   ffmpeg_source="$BUILDS/ffmpeg-9.0"
   ffmpeg_request_patch="$DOWNLOADS/ffmpeg-9.0-v4l2-request.patch"
   ffmpeg_portable_patch="$ROOT/vendor/patches/ffmpeg-9.0-v4l2-request-portable.patch"
@@ -340,8 +340,10 @@ if [ ! -f "$BUILDS/.ffmpeg-9.0-h264-mjpeg-v4l2-request-shared" ]; then
       --enable-avutil \
       --enable-swscale \
       --enable-decoder=h264 \
+      --enable-decoder=h264_v4l2m2m \
       --enable-decoder=mjpeg \
       --enable-parser=h264 \
+      --enable-v4l2-m2m \
       --enable-v4l2-request \
       --enable-libudev \
       --disable-libdrm \
@@ -355,10 +357,14 @@ if [ ! -f "$BUILDS/.ffmpeg-9.0-h264-mjpeg-v4l2-request-shared" ]; then
       --disable-stripping \
       --extra-cflags="-O3 -I$PREFIX/include/libdrm -ffile-prefix-map=$ROOT=." \
       --extra-ldflags="-L$PREFIX/lib"
+    if ! grep -q '^#define CONFIG_H264_V4L2M2M_DECODER 1$' config_components.h; then
+      echo "FFmpeg did not enable the requested h264_v4l2m2m decoder" >&2
+      exit 1
+    fi
     make -j4
     make install-libs install-headers
   )
-  : >"$BUILDS/.ffmpeg-9.0-h264-mjpeg-v4l2-request-shared"
+  : >"$BUILDS/.ffmpeg-9.0-h264-mjpeg-v4l2-m2m-request-v2-shared"
 fi
 
 if [ ! -f "$LIBDATACHANNEL_BUILD/.greenovercast-$LIBDATACHANNEL_COMMIT" ]; then

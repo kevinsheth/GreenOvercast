@@ -31,6 +31,7 @@ const Session = struct {
     audio_track: c_int = -1,
     stream_width: c_uint,
     stream_height: c_uint,
+    video_bitrate_bps: c_uint,
     install_id: [37]u8 = [_]u8{0} ** 37,
     connected: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     gathering_complete: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -175,16 +176,16 @@ fn sendStartupMessages(session: *Session) void {
     const capabilities = std.fmt.bufPrintZ(
         &capabilities_buffer,
         "{{\"type\":\"Message\",\"content\":\"{{\\\"supportsCustomResolution\\\":true," ++
-            "\\\"supportsHevc\\\":false,\\\"supportsHdr\\\":false,\\\"supportsFps\\\":30," ++
-            "\\\"maxWidth\\\":{d},\\\"maxHeight\\\":{d},\\\"maxBitrateKbps\\\":2000," ++
+            "\\\"supportsHevc\\\":false,\\\"supportsHdr\\\":false,\\\"supportsFps\\\":60," ++
+            "\\\"maxWidth\\\":{d},\\\"maxHeight\\\":{d},\\\"maxBitrateKbps\\\":{d}," ++
             "\\\"video\\\":{{\\\"width\\\":{d},\\\"height\\\":{d}," ++
             "\\\"maxWidth\\\":{d},\\\"maxHeight\\\":{d}," ++
-            "\\\"maxBitrateKbps\\\":2000}}}}\",\"id\":\"greenovercast-capabilities\"," ++
+            "\\\"maxBitrateKbps\\\":{d}}}}}\",\"id\":\"greenovercast-capabilities\"," ++
             "\"target\":\"/streaming/characteristics/clientdevicecapabilities\",\"cv\":\"\"}}",
         .{
-            session.stream_width, session.stream_height,
-            session.stream_width, session.stream_height,
-            session.stream_width, session.stream_height,
+            session.stream_width,  session.stream_height,             session.video_bitrate_bps / 1_000,
+            session.stream_width,  session.stream_height,             session.stream_width,
+            session.stream_height, session.video_bitrate_bps / 1_000,
         },
     ) catch return;
     var dimensions_buffer: [768]u8 = undefined;
@@ -283,6 +284,15 @@ fn onMessageChannel(_: c_int, data: [*c]const u8, size: c_int, context: ?*anyopa
     }
     if (std.mem.indexOf(u8, message[0..copy_length], "HandshakeAck") == null) return;
     session.handshake_complete.store(true, .release);
+    const resolution_alias = if (session.stream_height > 720) "1080HQ" else "720HQ";
+    var resolution_buffer: [128]u8 = undefined;
+    const resolution = std.fmt.bufPrintZ(
+        &resolution_buffer,
+        "{{\"message\":\"userRequestedResolutionUpdate\",\"resolutionAlias\":\"{s}\"}}",
+        .{resolution_alias},
+    ) catch return;
+    _ = c.rtcSendMessage(session.control_channel, resolution.ptr, -1);
+    debug("Requested Xbox resolution tier: {s}\n", .{resolution_alias});
     // This fixed access key is part of the Xbox streaming control protocol.
     _ = c.rtcSendMessage(
         session.control_channel,
@@ -313,6 +323,7 @@ pub export fn go_webrtc_session_create(
     wait_context: ?*anyopaque,
     stream_width: c_uint,
     stream_height: c_uint,
+    video_bitrate_bps: c_uint,
 ) ?*Session {
     const cloud = cloud_pointer orelse return null;
     const video = video_pointer orelse return null;
@@ -321,6 +332,7 @@ pub export fn go_webrtc_session_create(
     const wait = wait_pointer orelse return null;
     if (stream_width < 640 or stream_width > 1920 or stream_height < 360 or stream_height > 1080)
         return null;
+    if (video_bitrate_bps < 500_000 or video_bitrate_bps > 20_000_000) return null;
     const session = std.heap.c_allocator.create(Session) catch return null;
     session.* = .{
         .cloud = cloud,
@@ -331,6 +343,7 @@ pub export fn go_webrtc_session_create(
         .wait_context = wait_context,
         .stream_width = stream_width,
         .stream_height = stream_height,
+        .video_bitrate_bps = video_bitrate_bps,
     };
     generateInstallId(&session.install_id);
     return session;
@@ -448,7 +461,7 @@ fn buildCompatibleOffer(full_sdp: []const u8, output: []u8) ![:0]u8 {
             "c=IN IP4 0.0.0.0\r\na=mid:video\r\na=recvonly\r\n" ++
             "a=rtpmap:102 H264/90000\r\n" ++
             "a=fmtp:102 level-asymmetry-allowed=0;packetization-mode=1;" ++
-            "profile-level-id=42e020;max-fs=3600;max-mbps=108000\r\n" ++
+            "profile-level-id=42e02a;max-fs=8160;max-mbps=489600\r\n" ++
             "a=rtcp-fb:102 goog-remb\r\na=rtcp-fb:102 ccm fir\r\n" ++
             "a=rtcp-fb:102 nack\r\na=rtcp-fb:102 nack pli\r\na=rtcp-mux\r\n" ++
             "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n" ++
@@ -668,14 +681,16 @@ pub export fn go_webrtc_session_send_gamepad(session_pointer: ?*Session) void {
 
 pub export fn go_webrtc_session_request_video_bitrate(
     session_pointer: ?*Session,
-    bits_per_second: c_uint,
 ) void {
     const session = session_pointer orelse return;
     if (session.video_track <= 0 or c.go_video_pipeline_has_media(session.video) == 0) return;
     if (session.video_bitrate_requested.cmpxchgStrong(false, true, .acq_rel, .acquire) != null)
         return;
-    const result = c.rtcRequestBitrate(session.video_track, bits_per_second);
-    debug("Requested video bitrate: {d} kbps (result={d})\n", .{ bits_per_second / 1000, result });
+    const result = c.rtcRequestBitrate(session.video_track, session.video_bitrate_bps);
+    debug("Requested video bitrate: {d} kbps (result={d})\n", .{
+        session.video_bitrate_bps / 1_000,
+        result,
+    });
 }
 
 pub export fn go_webrtc_session_destroy(session_pointer: ?*Session) void {

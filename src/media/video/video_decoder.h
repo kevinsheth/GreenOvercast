@@ -16,6 +16,7 @@ typedef enum {
     GO_VIDEO_DECODER_BACKEND_CEDAR,
     GO_VIDEO_DECODER_BACKEND_MPP,
     GO_VIDEO_DECODER_BACKEND_V4L2_REQUEST,
+    GO_VIDEO_DECODER_BACKEND_V4L2_M2M,
 } GoVideoDecoderBackend;
 
 typedef enum {
@@ -24,6 +25,7 @@ typedef enum {
     GO_VIDEO_DECODER_PREFERENCE_CEDAR,
     GO_VIDEO_DECODER_PREFERENCE_SOFTWARE,
     GO_VIDEO_DECODER_PREFERENCE_V4L2_REQUEST,
+    GO_VIDEO_DECODER_PREFERENCE_V4L2_M2M,
 } GoVideoDecoderPreference;
 
 typedef enum {
@@ -121,5 +123,7 @@ GoVideoDecoder* go_video_decoder_mpp_create(int max_width, int max_height, char*
                                             size_t error_capacity);
 GoVideoDecoder* go_video_decoder_v4l2_request_create(int max_width, int max_height, char* error,
                                                      size_t error_capacity);
+GoVideoDecoder* go_video_decoder_v4l2_m2m_create(int max_width, int max_height, char* error,
+                                                 size_t error_capacity);
 
 #endif

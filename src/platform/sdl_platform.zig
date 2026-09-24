@@ -46,7 +46,7 @@ pub export fn go_sdl_platform_create(
         0,
         640,
         480,
-        c.SDL_WINDOW_FULLSCREEN,
+        c.SDL_WINDOW_FULLSCREEN_DESKTOP,
     );
     if (platform.window == null) {
         sdlError("SDL_CreateWindow");
@@ -60,6 +60,10 @@ pub export fn go_sdl_platform_create(
     }
     if (platform.renderer == null) {
         sdlError("SDL_CreateRenderer");
+        return null;
+    }
+    if (c.SDL_RenderSetLogicalSize(platform.renderer, 640, 480) != 0) {
+        sdlError("SDL_RenderSetLogicalSize");
         return null;
     }
 

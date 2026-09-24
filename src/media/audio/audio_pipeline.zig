@@ -62,7 +62,9 @@ fn worker(pipeline: *Pipeline) void {
             pipeline.queue_count -= 1;
             _ = pipeline.late_packets.fetchAdd(1, .monotonic);
         }
-        const packet = pipeline.queue[pipeline.queue_head];
+        const queued_packet = &pipeline.queue[pipeline.queue_head];
+        var packet: AudioPacket = .{ .length = queued_packet.length };
+        @memcpy(packet.data[0..packet.length], queued_packet.data[0..packet.length]);
         pipeline.queue_head = (pipeline.queue_head + 1) % queue_capacity;
         pipeline.queue_count -= 1;
         pipeline.mutex.unlock();

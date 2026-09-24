@@ -1,5 +1,6 @@
 const std = @import("std");
 const catalog_service = @import("../catalog/service.zig");
+const video_bitrate = @import("../media/video/video_bitrate.zig");
 
 const c = @cImport({
     @cInclude("SDL2/SDL.h");
@@ -64,10 +65,19 @@ pub const Release = struct {
     curl_initialized: bool = false,
     requested_title: [128]u8 = [_]u8{0} ** 128,
     title_id: [128]u8 = [_]u8{0} ** 128,
+    video_bitrate_bps: c_uint = video_bitrate.bitsPerSecond(video_bitrate.default_kbps),
+    last_video_rtp_bytes: u64 = 0,
+    last_video_stats_ms: u32 = 0,
 
     fn initializeMedia(self: *Release) bool {
         const bootstrap_path = std.posix.getenv("GREENOVERCAST_H264_BOOTSTRAP_FILE");
         const decoder_value = std.posix.getenv("GREENOVERCAST_VIDEO_DECODER");
+        const bitrate_value = std.posix.getenv("GREENOVERCAST_VIDEO_BITRATE_KBPS");
+        const bitrate_kbps = video_bitrate.parseKbps(if (bitrate_value) |value| value else null) catch {
+            std.debug.print("Invalid GREENOVERCAST_VIDEO_BITRATE_KBPS value\n", .{});
+            return false;
+        };
+        self.video_bitrate_bps = video_bitrate.bitsPerSecond(bitrate_kbps);
         var decoder_preference: c.GoVideoDecoderPreference = c.GO_VIDEO_DECODER_PREFERENCE_AUTO;
         if (c.go_video_decoder_preference_parse(
             if (decoder_value) |value| value.ptr else null,
@@ -76,11 +86,13 @@ pub const Release = struct {
             std.debug.print("Invalid GREENOVERCAST_VIDEO_DECODER value\n", .{});
             return false;
         }
+        const stream_width = c.go_handheld_ui_stream_width(self.ui());
+        const stream_height = c.go_handheld_ui_stream_height(self.ui());
         const config = c.GoVideoPipelineConfig{
             .renderer = c.go_sdl_platform_renderer(self.platform),
             .bootstrap_path = if (bootstrap_path) |path| path.ptr else null,
-            .max_width = 1280,
-            .max_height = 720,
+            .max_width = @intCast(stream_width),
+            .max_height = @intCast(stream_height),
             .decoder_preference = decoder_preference,
         };
         self.video = c.go_video_pipeline_create(&config);
@@ -326,6 +338,7 @@ pub const Release = struct {
             self.ui(),
             stream_width,
             stream_height,
+            self.video_bitrate_bps,
         );
         if (self.webrtc == null or c.go_webrtc_session_setup(self.webrtc) < 0) {
             if (c.go_handheld_ui_cancelled(self.ui()) != 0) return .cancelled;
@@ -372,10 +385,22 @@ pub const Release = struct {
         if (self.webrtc == null) return .failed;
         debug("Streaming (hold Select + Start for 1s to exit)\n", .{});
         const stream_started = c.SDL_GetTicks();
+        self.last_video_rtp_bytes = c.go_video_pipeline_stats(self.video).rtp_bytes;
+        self.last_video_stats_ms = 0;
         var last_stats = stream_started;
         var last_keyframe_request = stream_started;
         var next_loop = stream_started;
         var pacing_remainder: u32 = 0;
+
+        const renderer = c.go_sdl_platform_renderer(self.platform) orelse return .failed;
+        var logical_width: c_int = 0;
+        var logical_height: c_int = 0;
+        c.SDL_RenderGetLogicalSize(renderer, &logical_width, &logical_height);
+        const logical_size_enabled = logical_width > 0 and logical_height > 0;
+        if (logical_size_enabled) _ = c.SDL_RenderSetLogicalSize(renderer, 0, 0);
+        defer if (logical_size_enabled) {
+            _ = c.SDL_RenderSetLogicalSize(renderer, logical_width, logical_height);
+        };
 
         if (c.go_audio_pipeline_start(self.audio) < 0) {
             std.debug.print("Audio worker failed to start\n", .{});
@@ -391,6 +416,12 @@ pub const Release = struct {
             var event: c.SDL_Event = undefined;
             while (c.SDL_PollEvent(&event) != 0) {
                 c.go_controller_input_handle_event(controller_input, &event);
+                if ((event.type == c.SDL_CONTROLLERBUTTONDOWN or
+                    event.type == c.SDL_CONTROLLERBUTTONUP) and
+                    c.go_controller_input_event_is_active(controller_input, &event) != 0)
+                {
+                    c.go_webrtc_session_send_gamepad(self.webrtc);
+                }
                 if (event.type == c.SDL_QUIT or
                     (event.type == c.SDL_KEYDOWN and event.key.keysym.sym == c.SDLK_ESCAPE))
                     return .cancelled;
@@ -410,7 +441,7 @@ pub const Release = struct {
 
             c.go_webrtc_session_send_gamepad(self.webrtc);
             c.go_video_pipeline_render(self.video);
-            c.go_webrtc_session_request_video_bitrate(self.webrtc, 2_000_000);
+            c.go_webrtc_session_request_video_bitrate(self.webrtc);
             const now = c.SDL_GetTicks();
             if (c.go_video_pipeline_needs_keyframe(self.video) != 0 and
                 now -% last_keyframe_request >= 500)
@@ -423,11 +454,11 @@ pub const Release = struct {
                 last_stats = now;
             }
 
-            next_loop +%= 16;
+            next_loop +%= 8;
             pacing_remainder += 40;
-            if (pacing_remainder >= 60) {
+            if (pacing_remainder >= 120) {
                 next_loop +%= 1;
-                pacing_remainder -= 60;
+                pacing_remainder -= 120;
             }
             const remaining: i32 = @bitCast(next_loop -% c.SDL_GetTicks());
             if (remaining > 0)
@@ -442,13 +473,19 @@ pub const Release = struct {
         const video = c.go_video_pipeline_stats(self.video);
         const audio = c.go_audio_pipeline_stats(self.audio);
         const cloud = c.go_cloud_session_stats(self.cloud);
+        const interval_ms = elapsed_ms -% self.last_video_stats_ms;
+        const interval_bytes = video.rtp_bytes -% self.last_video_rtp_bytes;
+        const video_kbps = video_bitrate.measureKbps(interval_bytes, interval_ms);
+        self.last_video_stats_ms = elapsed_ms;
+        self.last_video_rtp_bytes = video.rtp_bytes;
         std.debug.print(
-            "[{d}s] video_rtp={d} payload={d} rejected={d}/pt{d} aus={d} frames={d}/{d} source={d}x{d} " ++
+            "[{d}s] video_kbps={d} video_rtp={d} payload={d} rejected={d}/pt{d} aus={d} frames={d}/{d} source={d}x{d} " ++
                 "nals={d}/{d}/{d}/{d} ts={d} synced={d} gaps={d} missing={d} late_rtp={d} " ++
                 "decoder={d} init_failures={d} fallbacks={d} backpressure={d} corrupt={d} " ++
                 "info_changes={d} decode_errors={d}/{d}/{d} keyframes={d} queue={d}/{d}\n",
             .{
                 elapsed_ms / 1000,
+                video_kbps,
                 video.rtp_packets,
                 video.payload_packets,
                 video.rejected_packets,

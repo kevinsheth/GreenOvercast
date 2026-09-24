@@ -24,6 +24,7 @@ typedef struct {
 } GoVideoPipelineConfig;
 
 typedef struct {
+    uint64_t rtp_bytes;
     int rtp_packets;
     int payload_packets;
     int rejected_packets;

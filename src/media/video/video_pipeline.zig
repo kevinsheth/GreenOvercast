@@ -16,6 +16,7 @@ const bootstrap_capacity = 4104;
 const packet_capacity = 4096;
 const queue_capacity = 128;
 const backpressure_attempts = 64;
+const hardware_restart_limit = 2;
 
 const VideoPacket = struct {
     length: u16 = 0,
@@ -45,6 +46,8 @@ const Pipeline = struct {
     decoded_frame: ?*c.AVFrame = null,
     max_width: c_int,
     max_height: c_int,
+    decoder_preference: c.GoVideoDecoderPreference,
+    hardware_restart_count: u8 = 0,
     decoder_failure: [256]u8 = [_]u8{0} ** 256,
     failed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
@@ -65,6 +68,7 @@ const Pipeline = struct {
 
     synced: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     keyframe_pending: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
+    rtp_bytes: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     rtp_packets: std.atomic.Value(c_int) = std.atomic.Value(c_int).init(0),
     payload_packets: std.atomic.Value(c_int) = std.atomic.Value(c_int).init(0),
     rejected_packets: std.atomic.Value(c_int) = std.atomic.Value(c_int).init(0),
@@ -96,6 +100,7 @@ const Pipeline = struct {
 };
 
 pub const Stats = extern struct {
+    rtp_bytes: u64 = 0,
     rtp_packets: c_int = 0,
     payload_packets: c_int = 0,
     rejected_packets: c_int = 0,
@@ -196,7 +201,8 @@ fn persistBootstrap(pipeline: *Pipeline) c_int {
     return 0;
 }
 
-fn publishFrame(pipeline: *Pipeline, frame: *c.AVFrame, decoder_name: [*c]const u8) void {
+fn publishFrame(pipeline: *Pipeline, decoder_name: [*c]const u8) void {
+    const frame = pipeline.decoded_frame orelse return;
     _ = pipeline.decoded_frames.fetchAdd(1, .monotonic);
     pipeline.source_width.store(frame.width, .monotonic);
     pipeline.source_height.store(frame.height, .monotonic);
@@ -211,9 +217,8 @@ fn publishFrame(pipeline: *Pipeline, frame: *c.AVFrame, decoder_name: [*c]const 
     }
     pipeline.frame_mutex.lock();
     defer pipeline.frame_mutex.unlock();
-    c.av_frame_unref(pipeline.display_frame);
-    if (c.av_frame_ref(pipeline.display_frame, frame) == 0)
-        pipeline.frame_ready.store(true, .release);
+    std.mem.swap(?*c.AVFrame, &pipeline.decoded_frame, &pipeline.display_frame);
+    pipeline.frame_ready.store(true, .release);
 }
 
 fn publishDecodedFrame(pipeline: *Pipeline, frame: *const c.GoDecodedVideoFrame) c_int {
@@ -245,7 +250,7 @@ fn publishDecodedFrame(pipeline: *Pipeline, frame: *const c.GoDecodedVideoFrame)
     else
         c.AVCOL_RANGE_MPEG;
     target.colorspace = c.AVCOL_SPC_BT709;
-    publishFrame(pipeline, target, c.go_video_decoder_name(pipeline.decoders.active));
+    publishFrame(pipeline, c.go_video_decoder_name(pipeline.decoders.active));
     return 0;
 }
 
@@ -295,6 +300,27 @@ fn switchToSoftwareDecoder(pipeline: *Pipeline) c_int {
     std.debug.print("Selected video decoder: {s}\n", .{
         std.mem.span(c.go_video_decoder_name(pipeline.decoders.active)),
     });
+    return 0;
+}
+
+fn restartHardwareDecoder(pipeline: *Pipeline) c_int {
+    if (pipeline.decoders.active == null or pipeline.decoders.active == pipeline.decoders.software or
+        pipeline.hardware_restart_count >= hardware_restart_limit) return -1;
+    const backend = c.go_video_decoder_backend(pipeline.decoders.active);
+    c.go_video_decoder_selection_destroy(&pipeline.decoders);
+    pipeline.hardware_restart_count += 1;
+    if (selectDecoder(pipeline, pipeline.decoder_preference) != 0) return -1;
+    const restarted_backend = c.go_video_decoder_backend(pipeline.decoders.active);
+    if (restarted_backend != backend) {
+        _ = pipeline.decoder_runtime_fallbacks.fetchAdd(1, .monotonic);
+    } else {
+        std.debug.print("Restarted {s} video decoder after stalled stream transition\n", .{
+            std.mem.span(c.go_video_decoder_name(pipeline.decoders.active)),
+        });
+    }
+    c.go_h264_depacketizer_restart_decode_epoch(pipeline.depacketizer);
+    pipeline.keyframe_pending.store(true, .release);
+    pipeline.synced.store(false, .release);
     return 0;
 }
 
@@ -349,11 +375,13 @@ fn decodeAccessUnit(
     const pipeline: *Pipeline = @ptrCast(@alignCast(context orelse return));
     if (pipeline.decoders.active == null or pipeline.failed.load(.acquire)) return;
     if (decodeWithActiveBackend(pipeline, data, length) == 0) return;
+    if (restartHardwareDecoder(pipeline) == 0) return;
     if (switchToSoftwareDecoder(pipeline) != 0) markDecoderFailed(pipeline);
 }
 
 fn processPacket(pipeline: *Pipeline, packet: []const u8) void {
     if (packet.len < 12 or pipeline.depacketizer == null) return;
+    _ = pipeline.rtp_bytes.fetchAdd(packet.len, .monotonic);
     _ = pipeline.rtp_packets.fetchAdd(1, .monotonic);
     const result = c.go_h264_depacketizer_feed(
         pipeline.depacketizer,
@@ -403,7 +431,9 @@ fn worker(pipeline: *Pipeline) void {
             pipeline.packet_mutex.unlock();
             break;
         }
-        const packet = pipeline.packet_queue[pipeline.packet_queue_head];
+        const queued = &pipeline.packet_queue[pipeline.packet_queue_head];
+        var packet: VideoPacket = .{ .length = queued.length };
+        @memcpy(packet.data[0..packet.length], queued.data[0..packet.length]);
         pipeline.packet_queue_head = (pipeline.packet_queue_head + 1) % queue_capacity;
         pipeline.packet_queue_count -= 1;
         pipeline.packet_mutex.unlock();
@@ -545,14 +575,18 @@ pub export fn go_video_pipeline_create(config_pointer: ?*const c.GoVideoPipeline
     if (config.renderer == null or config.max_width <= 0 or config.max_height <= 0 or
         config.max_width > 8192 or config.max_height > 8192 or
         config.decoder_preference < c.GO_VIDEO_DECODER_PREFERENCE_AUTO or
-        config.decoder_preference > c.GO_VIDEO_DECODER_PREFERENCE_V4L2_REQUEST) return null;
+        config.decoder_preference > c.GO_VIDEO_DECODER_PREFERENCE_V4L2_M2M) return null;
     const pipeline = std.heap.c_allocator.create(Pipeline) catch return null;
     pipeline.* = .{
         .renderer = config.renderer.?,
         .max_width = config.max_width,
         .max_height = config.max_height,
+        .decoder_preference = config.decoder_preference,
     };
-    errdefer _ = go_video_pipeline_destroy(pipeline);
+    var created = false;
+    defer if (!created) {
+        _ = go_video_pipeline_destroy(pipeline);
+    };
     if (config.bootstrap_path != null) {
         const path = std.mem.span(config.bootstrap_path);
         if (path.len >= pipeline.bootstrap_path.len) return null;
@@ -566,6 +600,7 @@ pub export fn go_video_pipeline_create(config_pointer: ?*const c.GoVideoPipeline
     if (pipeline.decoded_frame == null or pipeline.display_frame == null or pipeline.render_frame == null)
         return null;
     if (selectDecoder(pipeline, config.decoder_preference) != 0) return null;
+    created = true;
     return pipeline;
 }
 
@@ -634,8 +669,7 @@ pub export fn go_video_pipeline_render(pipeline_pointer: ?*Pipeline) void {
     if (!pipeline.frame_ready.load(.acquire)) return;
     pipeline.frame_mutex.lock();
     if (pipeline.frame_ready.load(.acquire)) {
-        c.av_frame_unref(pipeline.render_frame);
-        c.av_frame_move_ref(pipeline.render_frame, pipeline.display_frame);
+        std.mem.swap(?*c.AVFrame, &pipeline.display_frame, &pipeline.render_frame);
         pipeline.frame_ready.store(false, .release);
     }
     pipeline.frame_mutex.unlock();
@@ -645,7 +679,6 @@ pub export fn go_video_pipeline_render(pipeline_pointer: ?*Pipeline) void {
             std.debug.print("Frame upload failed: {s}\n", .{std.mem.span(c.SDL_GetError())});
             pipeline.upload_error_reported = true;
         }
-        c.av_frame_unref(frame);
         return;
     }
     var output_width: c_int = 0;
@@ -665,7 +698,6 @@ pub export fn go_video_pipeline_render(pipeline_pointer: ?*Pipeline) void {
     _ = c.SDL_RenderCopy(pipeline.renderer, pipeline.texture, &source, &destination);
     c.SDL_RenderPresent(pipeline.renderer);
     _ = pipeline.rendered_frames.fetchAdd(1, .monotonic);
-    c.av_frame_unref(frame);
 }
 
 pub export fn go_video_pipeline_needs_keyframe(pipeline: ?*const Pipeline) c_int {
@@ -688,6 +720,7 @@ pub export fn go_video_pipeline_note_keyframe_request(pipeline: ?*Pipeline) void
 pub export fn go_video_pipeline_stats(pipeline_pointer: ?*Pipeline) Stats {
     const pipeline = pipeline_pointer orelse return .{};
     var stats = Stats{
+        .rtp_bytes = pipeline.rtp_bytes.load(.monotonic),
         .rtp_packets = pipeline.rtp_packets.load(.monotonic),
         .payload_packets = pipeline.payload_packets.load(.monotonic),
         .rejected_packets = pipeline.rejected_packets.load(.monotonic),

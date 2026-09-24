@@ -65,7 +65,7 @@ supported.
 ## Build
 
 You need a Linux or macOS host with `cmake`, `curl`, `git`, `make`, `patch`,
-`perl`, and `python3`.
+`perl`, `pkg-config`, `python3`, and `tar`.
 
 ```sh
 tools/bootstrap.sh

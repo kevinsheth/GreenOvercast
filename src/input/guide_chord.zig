@@ -28,7 +28,7 @@ pub const State = struct {
         }
         if (left and right) {
             self.active = true;
-            self.pulse_packets = 7;
+            self.pulse_packets = 15;
             return .{ .left = true, .right = true };
         }
         return .{ .left = left, .right = right };
@@ -39,7 +39,7 @@ test "the guide chord pulses once and restores a held stick" {
     var state = State{};
     var buttons = state.update(true, true);
     try std.testing.expect(buttons.left and buttons.right);
-    for (0..7) |_| {
+    for (0..15) |_| {
         buttons = state.update(true, true);
         try std.testing.expect(buttons.left and buttons.right);
     }

@@ -70,6 +70,7 @@ static void test_yuv420p(void) {
 int main(void) {
     test_nv12(640, 360, 32, 16);
     test_nv12(1280, 720, 64, 32);
+    test_nv12(1920, 1080, 0, 0);
     test_nv12(1920, 1080, 128, 64);
     test_nv12(8, 5, 4, 2);
     test_nv12(7, 5, 3, 2);

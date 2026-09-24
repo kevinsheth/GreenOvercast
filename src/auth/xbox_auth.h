@@ -22,6 +22,7 @@ GoXboxAuthResult go_xbox_auth_refresh(GoXboxAuth* auth);
 int go_xbox_auth_sign_out(GoXboxAuth* auth);
 const char* go_xbox_auth_gssv_token(const GoXboxAuth* auth);
 const char* go_xbox_auth_passport_token(const GoXboxAuth* auth);
+const char* go_xbox_auth_cloud_base_uri(const GoXboxAuth* auth);
 void go_xbox_auth_destroy(GoXboxAuth* auth);
 
 #ifdef __cplusplus

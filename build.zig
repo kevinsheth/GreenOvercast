@@ -38,6 +38,7 @@ const release_zig_roots = [_]struct {
         .imports = &.{
             .{ .name = "form_writer", .path = "src/net/form_writer.zig" },
             .{ .name = "json_reader", .path = "src/net/json_reader.zig" },
+            .{ .name = "xbox_region", .path = "src/auth/xbox_region.zig" },
         },
     },
     .{
@@ -78,6 +79,7 @@ const release_zig_roots = [_]struct {
 
 const release_c_sources = [_][]const u8{
     "src/media/video/video_decoder_ffmpeg.c",
+    "src/media/video/video_decoder_v4l2_m2m.c",
     "src/media/video/video_decoder_v4l2_request.c",
     "src/auth/token_store_adapter.c",
     "src/net/http_client.c",
@@ -464,12 +466,14 @@ pub fn build(b: *std.Build) void {
         "src/input/wire_encoder.zig",
         "src/input/guide_chord.zig",
         "src/session/message_protocol.zig",
+        "src/auth/xbox_region.zig",
         "src/ui/keyboard.zig",
         "src/ui/control_icons.zig",
         "src/ui/navigation_repeat.zig",
         "src/ui/persistent_settings.zig",
         "src/ui/stream_dimensions.zig",
         "src/media/rtp/h264_depacketizer.zig",
+        "src/media/video/video_bitrate.zig",
         "src/net/json_reader.zig",
         "src/net/json_writer.zig",
         "src/net/form_writer.zig",

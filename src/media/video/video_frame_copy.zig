@@ -50,6 +50,10 @@ fn copyPlane(
     row_bytes: usize,
     rows: usize,
 ) void {
+    if (destination_stride == row_bytes and source_stride == row_bytes) {
+        @memcpy(destination[0 .. row_bytes * rows], source[0 .. row_bytes * rows]);
+        return;
+    }
     for (0..rows) |row| {
         const destination_offset = row * destination_stride;
         const source_offset = row * source_stride;
