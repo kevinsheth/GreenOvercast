@@ -459,11 +459,11 @@ pub const Release = struct {
                 last_stats = now;
             }
 
-            next_loop +%= 8;
+            next_loop +%= 16;
             pacing_remainder += 40;
-            if (pacing_remainder >= 120) {
+            if (pacing_remainder >= 60) {
                 next_loop +%= 1;
-                pacing_remainder -= 120;
+                pacing_remainder -= 60;
             }
             const remaining: i32 = @bitCast(next_loop -% c.SDL_GetTicks());
             if (remaining > 0)
