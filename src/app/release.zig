@@ -1,6 +1,7 @@
 const std = @import("std");
 const catalog_service = @import("../catalog/service.zig");
 const video_bitrate = @import("../media/video/video_bitrate.zig");
+const stream_dimensions = @import("../ui/stream_dimensions.zig");
 
 const c = @cImport({
     @cInclude("SDL2/SDL.h");
@@ -88,11 +89,15 @@ pub const Release = struct {
         }
         const stream_width = c.go_handheld_ui_stream_width(self.ui());
         const stream_height = c.go_handheld_ui_stream_height(self.ui());
+        const decoder_limits = stream_dimensions.decoderLimitsForStream(.{
+            .width = stream_width,
+            .height = stream_height,
+        });
         const config = c.GoVideoPipelineConfig{
             .renderer = c.go_sdl_platform_renderer(self.platform),
             .bootstrap_path = if (bootstrap_path) |path| path.ptr else null,
-            .max_width = @intCast(stream_width),
-            .max_height = @intCast(stream_height),
+            .max_width = @intCast(decoder_limits.width),
+            .max_height = @intCast(decoder_limits.height),
             .decoder_preference = decoder_preference,
         };
         self.video = c.go_video_pipeline_create(&config);

@@ -6,8 +6,13 @@ pub const Dimensions = struct {
 };
 
 const minimum = Dimensions{ .width = 640, .height = 360 };
+const minimumDecoder = Dimensions{ .width = 1280, .height = 720 };
 const maximum = Dimensions{ .width = 1920, .height = 1080 };
 const fallback = Dimensions{ .width = 640, .height = 480 };
+
+pub fn decoderLimitsForStream(stream: Dimensions) Dimensions {
+    return if (stream.height > minimumDecoder.height) maximum else minimumDecoder;
+}
 
 pub fn forDisplay(display_width: u32, display_height: u32) Dimensions {
     if (display_width == 0 or display_height == 0 or display_width < display_height) return fallback;
@@ -61,6 +66,11 @@ test "fits larger displays within decoder limits" {
     try std.testing.expectEqual(Dimensions{ .width = 1024, .height = 768 }, forDisplay(1024, 768));
     try std.testing.expectEqual(Dimensions{ .width = 1920, .height = 1080 }, forDisplay(1920, 1080));
     try std.testing.expectEqual(Dimensions{ .width = 1920, .height = 1080 }, forDisplay(2560, 1440));
+}
+
+test "decoder limits include the Xbox minimum source tier" {
+    try std.testing.expectEqual(minimumDecoder, decoderLimitsForStream(.{ .width = 640, .height = 480 }));
+    try std.testing.expectEqual(maximum, decoderLimitsForStream(.{ .width = 1024, .height = 768 }));
 }
 
 test "aligns dimensions to eight pixels" {
