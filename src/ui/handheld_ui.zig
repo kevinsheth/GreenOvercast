@@ -392,6 +392,8 @@ fn pickTitle(ui: *Ui, titles: []const library.Title, requested: []const u8) c_in
     defer std.heap.c_allocator.free(indices);
     var view = library.View{ .titles = titles, .indices = indices };
     view.rebuild(&ui.settings, library.requestedTitle(titles, requested));
+    if (requested.len > 0 and std.posix.getenv("GREENOVERCAST_AUTOSTART") != null)
+        return @intCast(view.selectedTitleIndex() orelse return c.GO_HANDHELD_UI_PICK_CANCELLED);
     var repeat = navigation.Repeater{};
     var horizontal_latch = navigation.AxisLatch{};
     var vertical_latch = navigation.AxisLatch{};
